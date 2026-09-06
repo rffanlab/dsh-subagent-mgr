@@ -19,11 +19,6 @@ import {
 export const name = 'dsh-subagent-mgr'
 export const MANAGER_SETTINGS_NS = 'subagent-mgr'
 
-/**
- * The browser edits one authoritative `profiles` map through Harness settings.
- * Detailed semantic validation stays in `validateStore()` so slash commands,
- * legacy import, file reload, and Web writes share exactly one rule set.
- */
 export const ManagerSettingsSchema = z.object({
   profiles: z.dict(z.any()).default({}),
   migratedLegacy: z.boolean().default(false),
@@ -56,11 +51,13 @@ function storeFromSettings(value) {
 }
 
 function compatibilityProblems(profile, subagents) {
-  const provider = subagents.getProvider(profile.backend)
+  const provider = subagents?.getProvider?.(profile.backend)
   if (provider === undefined) return [`backend "${profile.backend}" is not registered right now`]
   const caps = provider.capabilities ?? {}
   const problems = []
-  const hasAgentOptions = profile.llmProvider !== undefined || profile.reasoningEffort !== undefined || profile.maxTokens !== undefined
+  const hasAgentOptions = profile.llmProvider !== undefined
+    || profile.reasoningEffort !== undefined
+    || profile.maxTokens !== undefined
   if ((hasAgentOptions || profile.dynamicModelSelection) && !caps.agentOptions) {
     problems.push(`backend "${profile.backend}" does not support child model/agentOptions overrides`)
   }
@@ -79,9 +76,15 @@ function compatibilityProblems(profile, subagents) {
   return problems
 }
 
-function profileDetails(profile) {
+function hardCompatibilityProblems(profile, subagents) {
+  return compatibilityProblems(profile, subagents)
+    .filter(problem => !problem.includes('is not registered right now'))
+}
+
+function profileDetails(profile, mounted) {
   const lines = [
     formatProfile(profile),
+    `runtime: ${mounted ? 'mounted' : profile.enabled ? 'not mounted / waiting' : 'disabled'}`,
     `enabled: ${profile.enabled}`,
     `backend: ${profile.backend}`,
     `toolName: ${profile.toolName}`,
@@ -102,15 +105,32 @@ function profileDetails(profile) {
 export function apply(ctx) {
   const legacyPath = statePathFromEnvironment()
   let store = emptyStore()
-  let storeFingerprint = ''
+  let storeFingerprint = JSON.stringify(store)
   let queue = Promise.resolve()
   let settingsOwnerScope
+  let settingsEverBound = false
+  let selfSettingsWriteFingerprint
   const mounted = new Map()
 
   const serialize = task => {
     const next = queue.then(task, task)
     queue = next.catch(() => {})
     return next
+  }
+
+  const currentSubagents = () => typeof ctx.get === 'function' ? ctx.get('subagents') : undefined
+
+  const assertCompatible = candidate => {
+    const subagents = currentSubagents()
+    if (subagents === undefined) return
+    const failures = []
+    for (const profile of Object.values(candidate.profiles)) {
+      if (!profile.enabled) continue
+      for (const problem of hardCompatibilityProblems(profile, subagents)) {
+        failures.push(`${profile.id}: ${problem}`)
+      }
+    }
+    if (failures.length) throw new Error(`subagent configuration is incompatible with the live Harness runtime:\n${failures.join('\n')}`)
   }
 
   const unmount = async id => {
@@ -123,50 +143,132 @@ export function apply(ctx) {
   const mount = async profile => {
     const config = profileToToolConfig(profile)
     const fiber = ctx.plugin(toolSubagent, config)
-    mounted.set(profile.id, { fiber, fingerprint: profileFingerprint(profile) })
+    try {
+      await fiber.await()
+    } catch (error) {
+      await Promise.resolve(fiber.dispose()).catch(() => {})
+      throw error
+    }
+    mounted.set(profile.id, {
+      fiber,
+      fingerprint: profileFingerprint(profile),
+      profile: structuredClone(profile),
+    })
   }
 
-  const reconcile = async nextStore => {
-    const enabledIds = new Set(Object.values(nextStore.profiles).filter(p => p.enabled).map(p => p.id))
-    for (const id of [...mounted.keys()]) {
-      if (!enabledIds.has(id)) await unmount(id)
+  const transitionRuntime = async nextStore => {
+    assertCompatible(nextStore)
+    const undo = []
+    try {
+      const targets = Object.values(nextStore.profiles).filter(profile => profile.enabled)
+      const targetIds = new Set(targets.map(profile => profile.id))
+
+      for (const profile of targets) {
+        const fingerprint = profileFingerprint(profile)
+        const current = mounted.get(profile.id)
+        if (current?.fingerprint === fingerprint) continue
+        if (current === undefined) {
+          await mount(profile)
+          undo.push(async () => { await unmount(profile.id) })
+          continue
+        }
+
+        const previous = structuredClone(current.profile)
+        await unmount(profile.id)
+        try {
+          await mount(profile)
+        } catch (error) {
+          await mount(previous)
+          throw error
+        }
+        undo.push(async () => {
+          await unmount(profile.id)
+          await mount(previous)
+        })
+      }
+
+      for (const [id, current] of [...mounted.entries()]) {
+        if (targetIds.has(id)) continue
+        const previous = structuredClone(current.profile)
+        await unmount(id)
+        undo.push(async () => { await mount(previous) })
+      }
+    } catch (error) {
+      const rollbackErrors = []
+      for (const revert of undo.reverse()) {
+        try { await revert() } catch (rollbackError) { rollbackErrors.push(rollbackError) }
+      }
+      if (rollbackErrors.length) {
+        throw new AggregateError([error, ...rollbackErrors], 'subagent runtime transition failed and rollback was incomplete')
+      }
+      throw error
     }
-    for (const profile of Object.values(nextStore.profiles)) {
-      if (!profile.enabled) continue
-      const fingerprint = profileFingerprint(profile)
-      const current = mounted.get(profile.id)
-      if (current?.fingerprint === fingerprint) continue
-      if (current !== undefined) await unmount(profile.id)
-      await mount(profile)
+
+    let closed = false
+    return {
+      commit() {
+        if (closed) return
+        closed = true
+        store = nextStore
+        storeFingerprint = JSON.stringify(nextStore)
+      },
+      async rollback() {
+        if (closed) return
+        closed = true
+        const rollbackErrors = []
+        for (const revert of undo.reverse()) {
+          try { await revert() } catch (error) { rollbackErrors.push(error) }
+        }
+        if (rollbackErrors.length) throw new AggregateError(rollbackErrors, 'subagent runtime rollback failed')
+      },
     }
-    store = nextStore
-    storeFingerprint = JSON.stringify(nextStore)
   }
 
-  const reload = async () => {
-    const nextStore = settingsOwnerScope === undefined
-      ? await readStore(legacyPath)
-      : storeFromSettings(settingsOwnerScope.get())
-    if (JSON.stringify(nextStore) === storeFingerprint) return false
-    await reconcile(nextStore)
+  const reconcileExternal = async nextStore => {
+    const normalized = validateStore(nextStore)
+    const fingerprint = JSON.stringify(normalized)
+    if (fingerprint === storeFingerprint) return false
+    const tx = await transitionRuntime(normalized)
+    tx.commit()
     return true
   }
 
-  /** Persist first; only publish/mount a mutation after its durable owner accepts it. */
+  const reload = async () => {
+    if (settingsOwnerScope !== undefined) {
+      return reconcileExternal(storeFromSettings(settingsOwnerScope.get()))
+    }
+    if (settingsEverBound) return false
+    return reconcileExternal(await readStore(legacyPath))
+  }
+
   const commit = async nextStore => {
     const normalized = validateStore(nextStore)
-    if (settingsOwnerScope !== undefined) {
-      await settingsOwnerScope.replace({ profiles: normalized.profiles, migratedLegacy: true })
-      await reconcile(normalized)
-    } else {
-      await writeStore(legacyPath, normalized)
-      await reconcile(normalized)
+    assertCompatible(normalized)
+    if (settingsEverBound && settingsOwnerScope === undefined) {
+      throw new Error('Harness settings is temporarily unavailable; refusing to fork state back into the legacy JSON file')
+    }
+
+    const tx = await transitionRuntime(normalized)
+    try {
+      if (settingsOwnerScope !== undefined) {
+        selfSettingsWriteFingerprint = JSON.stringify(normalized)
+        await settingsOwnerScope.replace({ profiles: normalized.profiles, migratedLegacy: true })
+      } else {
+        await writeStore(legacyPath, normalized)
+      }
+      tx.commit()
+    } catch (error) {
+      selfSettingsWriteFingerprint = undefined
+      try {
+        await tx.rollback()
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], 'subagent state write failed and runtime rollback was incomplete')
+      }
+      throw error
     }
     return normalized
   }
 
-  // Legacy JSON remains an import/fallback path for older Harness profiles that
-  // do not compose ctx.settings. Once settings appears it becomes authoritative.
   ctx.effect(() => {
     let closed = false
     let timer
@@ -174,10 +276,11 @@ export function apply(ctx) {
     mkdir(dir, { recursive: true }).then(() => {
       if (closed) return
       const watcher = watch(dir, { persistent: false }, (_event, filename) => {
+        if (settingsEverBound || settingsOwnerScope !== undefined) return
         if (filename && basename(String(filename)) !== basename(legacyPath)) return
         clearTimeout(timer)
         timer = setTimeout(() => serialize(reload).catch(error => {
-          console.error(`[dsh-subagent-mgr] reload failed: ${error?.stack ?? error}`)
+          console.error(`[dsh-subagent-mgr] legacy reload failed: ${error?.stack ?? error}`)
         }), 80)
       })
       if (closed) watcher.close()
@@ -189,25 +292,42 @@ export function apply(ctx) {
     }
   }, 'dsh-subagent-mgr legacy watcher bootstrap')
 
-  // Keep the old file useful before settings activates; the settings binding
-  // below imports it once when its own roster is still empty.
-  serialize(async () => reconcile(await readStore(legacyPath))).catch(error => {
+  serialize(async () => reconcileExternal(await readStore(legacyPath))).catch(error => {
     console.error(`[dsh-subagent-mgr] initial legacy load failed: ${error?.stack ?? error}`)
   })
 
   ctx.inject(['settings'], settingsCtx => {
+    settingsEverBound = true
     const scope = settingsCtx.settings.register(MANAGER_SETTINGS_NS, ManagerSettingsSchema, {
       validate(value) {
-        void storeFromSettings(value)
+        const candidate = storeFromSettings(value)
+        assertCompatible(candidate)
       },
     })
     settingsOwnerScope = scope
 
-    const stopWatch = scope.watch((next) => {
-      // Return immediately: Settings may await its observers. Reconciliation is
-      // serialized outside that commit so a settings write cannot deadlock on us.
-      void serialize(() => reconcile(storeFromSettings(next))).catch(error => {
-        console.error(`[dsh-subagent-mgr] settings reconcile failed: ${error?.stack ?? error}`)
+    const stopWatch = scope.watch(next => {
+      const candidate = storeFromSettings(next)
+      const fingerprint = JSON.stringify(candidate)
+      if (selfSettingsWriteFingerprint === fingerprint) {
+        selfSettingsWriteFingerprint = undefined
+        return
+      }
+
+      void serialize(async () => {
+        const previous = structuredClone(store)
+        try {
+          await reconcileExternal(candidate)
+        } catch (error) {
+          console.error(`[dsh-subagent-mgr] settings reconcile failed; restoring previous roster: ${error?.stack ?? error}`)
+          selfSettingsWriteFingerprint = JSON.stringify(previous)
+          try {
+            await scope.replace({ profiles: previous.profiles, migratedLegacy: true })
+          } catch (restoreError) {
+            selfSettingsWriteFingerprint = undefined
+            console.error(`[dsh-subagent-mgr] settings rollback failed: ${restoreError?.stack ?? restoreError}`)
+          }
+        }
       })
     })
     settingsCtx.effect(() => stopWatch, 'dsh-subagent-mgr settings watcher')
@@ -220,20 +340,31 @@ export function apply(ctx) {
       const fromSettings = storeFromSettings(settingsValue)
       const legacy = await readStore(legacyPath)
       if (settingsValue.migratedLegacy !== true) {
-        // One-time non-destructive migration. The marker prevents an old backup
-        // from resurrecting profiles after the user later deletes the whole roster.
         const target = Object.keys(fromSettings.profiles).length === 0 && Object.keys(legacy.profiles).length > 0
           ? legacy
           : fromSettings
+        selfSettingsWriteFingerprint = JSON.stringify(target)
         await scope.replace({ profiles: target.profiles, migratedLegacy: true })
-        await reconcile(target)
+        await reconcileExternal(target)
         return
       }
-      await reconcile(fromSettings)
+      await reconcileExternal(fromSettings)
     }).catch(error => {
       console.error(`[dsh-subagent-mgr] settings bootstrap failed: ${error?.stack ?? error}`)
     })
   })
+
+  const mutateProfile = async (id, updater) => {
+    const previous = store.profiles[id]
+    if (!previous) throw new Error(`unknown subagent: ${id}`)
+    const profile = updater(previous)
+    const problems = hardCompatibilityProblems(profile, currentSubagents())
+    if (problems.length) throw new Error(problems.join('\n'))
+    const next = structuredClone(store)
+    next.profiles[id] = profile
+    await commit(next)
+    return profile
+  }
 
   ctx.inject(['commands', 'subagents'], commandCtx => {
     commandCtx.commands.register({
@@ -244,24 +375,37 @@ export function apply(ctx) {
         try {
           const tokens = tokenize(invocation.rawInput?.trim() ?? '')
           const op = tokens.shift()?.toLowerCase() ?? 'list'
+
           if (op === 'help' || op === '?') return { kind: 'success', text: helpText() }
           if (op === 'list' || op === 'ls') {
             const profiles = Object.values(store.profiles).sort((a, b) => a.id.localeCompare(b.id))
-            return { kind: 'success', text: profiles.length ? profiles.map(formatProfile).join('\n') : 'No managed subagents. Try: /subagents add worker' }
+            return {
+              kind: 'success',
+              text: profiles.length
+                ? profiles.map(profile => `${mounted.has(profile.id) ? '✓' : profile.enabled ? '…' : '○'} ${formatProfile(profile)}`).join('\n')
+                : 'No managed subagents. Try: /subagents add worker',
+            }
           }
           if (op === 'show') {
             const id = tokens[0]
             const profile = store.profiles[id]
             if (!profile) return { kind: 'error', text: `unknown subagent: ${id}` }
-            return { kind: 'success', text: profileDetails(profile) }
+            return { kind: 'success', text: profileDetails(profile, mounted.has(id)) }
           }
           if (op === 'doctor') {
             const providers = commandCtx.subagents.list()
-            const state = settingsOwnerScope === undefined ? `legacy file: ${legacyPath}` : `settings namespace: ${MANAGER_SETTINGS_NS}`
-            const lines = [`state: ${state}`, `registered backends: ${providers.length ? providers.join(', ') : '(none)'}`]
+            const state = settingsOwnerScope === undefined
+              ? settingsEverBound ? 'settings temporarily unavailable' : `legacy file: ${legacyPath}`
+              : `settings namespace: ${MANAGER_SETTINGS_NS}`
+            const lines = [
+              `state: ${state}`,
+              `tool-subagent API: ${typeof toolSubagent.apply === 'function' ? 'present' : 'missing'}`,
+              `registered backends: ${providers.length ? providers.join(', ') : '(none)'}`,
+            ]
             for (const profile of Object.values(store.profiles).sort((a, b) => a.id.localeCompare(b.id))) {
               const problems = compatibilityProblems(profile, commandCtx.subagents)
-              lines.push(`${problems.length ? 'WARN' : 'OK'} ${profile.id}: ${problems.length ? problems.join('; ') : 'compatible with current backend capabilities'}`)
+              const runtime = mounted.has(profile.id) ? 'mounted' : profile.enabled ? 'waiting' : 'disabled'
+              lines.push(`${problems.length ? 'WARN' : 'OK'} ${profile.id} [${runtime}]: ${problems.length ? problems.join('; ') : 'compatible with current backend capabilities'}`)
             }
             return { kind: 'success', text: lines.join('\n') }
           }
@@ -274,7 +418,7 @@ export function apply(ctx) {
             if (!id) return { kind: 'error', text: 'usage: /subagents add <id> [key=value ...]' }
             if (store.profiles[id]) return { kind: 'error', text: `subagent already exists: ${id}` }
             const profile = normalizeProfile(id, parseAssignments(tokens))
-            const problems = compatibilityProblems(profile, commandCtx.subagents).filter(p => !p.includes('is not registered right now'))
+            const problems = hardCompatibilityProblems(profile, commandCtx.subagents)
             if (problems.length) return { kind: 'error', text: problems.join('\n') }
             const next = structuredClone(store)
             next.profiles[id] = profile
@@ -283,64 +427,44 @@ export function apply(ctx) {
           }
           if (op === 'set') {
             const id = tokens.shift()
-            const previous = store.profiles[id]
-            if (!previous) return { kind: 'error', text: `unknown subagent: ${id}` }
-            const profile = normalizeProfile(id, parseAssignments(tokens), previous)
-            const problems = compatibilityProblems(profile, commandCtx.subagents).filter(p => !p.includes('is not registered right now'))
-            if (problems.length) return { kind: 'error', text: problems.join('\n') }
-            const next = structuredClone(store)
-            next.profiles[id] = profile
-            await commit(next)
+            if (!id) return { kind: 'error', text: 'usage: /subagents set <id> key=value ...' }
+            const profile = await mutateProfile(id, previous => normalizeProfile(id, parseAssignments(tokens), previous))
             return { kind: 'success', text: `Updated ${formatProfile(profile)}` }
           }
           if (op === 'route') {
             const [id, provider, model, effort] = tokens
-            const previous = store.profiles[id]
-            if (!previous) return { kind: 'error', text: `unknown subagent: ${id}` }
-            if (!provider || !model) return { kind: 'error', text: 'usage: /subagents route <id> <provider|inherit> <model|inherit> [effort|inherit]' }
+            if (!id || !provider || !model) {
+              return { kind: 'error', text: 'usage: /subagents route <id> <provider|inherit> <model|inherit> [effort|inherit]' }
+            }
             const input = provider === 'inherit' || model === 'inherit'
               ? { provider: 'inherit', model: 'inherit', ...(effort ? { effort } : {}) }
               : { provider, model, ...(effort ? { effort } : {}) }
-            const profile = normalizeProfile(id, input, previous)
-            const problems = compatibilityProblems(profile, commandCtx.subagents).filter(p => !p.includes('is not registered right now'))
-            if (problems.length) return { kind: 'error', text: problems.join('\n') }
-            const next = structuredClone(store)
-            next.profiles[id] = profile
-            await commit(next)
+            const profile = await mutateProfile(id, previous => normalizeProfile(id, input, previous))
             return { kind: 'success', text: `Route updated: ${formatProfile(profile)}` }
           }
           if (op === 'persona') {
             const id = tokens.shift()
-            const previous = store.profiles[id]
-            if (!previous) return { kind: 'error', text: `unknown subagent: ${id}` }
-            if (!tokens.length) return { kind: 'error', text: 'usage: /subagents persona <id> <text|inherit>' }
-            const profile = normalizeProfile(id, { persona: tokens.join(' ') }, previous)
-            const problems = compatibilityProblems(profile, commandCtx.subagents).filter(p => !p.includes('is not registered right now'))
-            if (problems.length) return { kind: 'error', text: problems.join('\n') }
-            const next = structuredClone(store)
-            next.profiles[id] = profile
-            await commit(next)
-            return { kind: 'success', text: `Persona updated for ${id}.` }
+            if (!id || !tokens.length) return { kind: 'error', text: 'usage: /subagents persona <id> <text|inherit>' }
+            const profile = await mutateProfile(id, previous => normalizeProfile(id, { persona: tokens.join(' ') }, previous))
+            return { kind: 'success', text: `Persona updated for ${profile.id}.` }
           }
           if (op === 'enable' || op === 'disable') {
             const id = tokens[0]
-            const previous = store.profiles[id]
-            if (!previous) return { kind: 'error', text: `unknown subagent: ${id}` }
-            const profile = normalizeProfile(id, { enabled: op === 'enable' ? 'true' : 'false' }, previous)
-            const next = structuredClone(store)
-            next.profiles[id] = profile
-            await commit(next)
+            if (!id) return { kind: 'error', text: `usage: /subagents ${op} <id>` }
+            await mutateProfile(id, previous => normalizeProfile(id, { enabled: op === 'enable' ? 'true' : 'false' }, previous))
             return { kind: 'success', text: `${op === 'enable' ? 'Enabled' : 'Disabled'} ${id}.` }
           }
           if (op === 'clone') {
             const [source, target] = tokens
-            if (!store.profiles[source]) return { kind: 'error', text: `unknown subagent: ${source}` }
+            const sourceProfile = store.profiles[source]
+            if (!sourceProfile) return { kind: 'error', text: `unknown subagent: ${source}` }
             if (!target) return { kind: 'error', text: 'usage: /subagents clone <source> <target>' }
             if (store.profiles[target]) return { kind: 'error', text: `subagent already exists: ${target}` }
-            const sourceProfile = store.profiles[source]
             const cloneInput = { ...sourceProfile, toolName: `sub_${target}` }
             delete cloneInput.id
             const profile = normalizeProfile(target, cloneInput)
+            const problems = hardCompatibilityProblems(profile, commandCtx.subagents)
+            if (problems.length) return { kind: 'error', text: problems.join('\n') }
             const next = structuredClone(store)
             next.profiles[target] = profile
             await commit(next)
