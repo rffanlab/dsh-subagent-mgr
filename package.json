@@ -1,0 +1,46 @@
+{
+  "name": "dsh-subagent-mgr",
+  "version": "0.1.0",
+  "description": "Zero-YAML subagent manager bundle for DeepSeek Harness",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./core": "./src/core.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src/**/*.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check src/core.js && node --check src/index.js"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tool-subagent": "*"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rffanlab/dsh-subagent-mgr.git"
+  },
+  "keywords": [
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "subagent",
+    "agent",
+    "plugin"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
