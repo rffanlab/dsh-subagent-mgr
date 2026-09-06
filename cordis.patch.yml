@@ -1,0 +1,5 @@
+# dsh-subagent-mgr is a profile bundle. Installing it with `dsh plugin`
+# activates this row automatically; users never need to edit cordis.yml.
+- insert:
+    - id: dsh-subagent-mgr
+      name: 'dsh-subagent-mgr'
