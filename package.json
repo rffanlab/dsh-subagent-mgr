@@ -1,26 +1,28 @@
 {
   "name": "dsh-subagent-mgr",
-  "version": "0.3.0",
-  "description": "Zero-YAML subagent manager and Web UI bundle for DeepSeek Harness",
+  "version": "0.4.0",
+  "description": "Zero-YAML subagent control plane and Web UI for DeepSeek Harness",
   "type": "module",
-  "main": "./src/index.js",
+  "main": "./src/index-v4.js",
   "exports": {
-    ".": "./src/index.js",
-    "./client": "./lib/client.js",
+    ".": "./src/index-v4.js",
+    "./client": "./lib/client-v4.js",
     "./core": "./src/core.js",
+    "./backend-hints": "./src/backend-hints.js",
     "./package.json": "./package.json"
   },
   "files": [
     "src/**/*.js",
-    "lib/client.js",
+    "lib/client-v4.js",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/core.js && node --check src/index.js && node --check lib/client.js",
-    "packcheck": "npm pack --dry-run --json"
+    "check": "node --check src/core.js && node --check src/index-v4.js && node --check src/backend-hints.js && node --check src/settings-schema.js && node --check lib/client-v4.js",
+    "packcheck": "npm pack --dry-run --json",
+    "upstreamcheck": "node scripts/check-upstream-contract-v4.mjs"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "*"
@@ -42,7 +44,8 @@
     "dsh",
     "subagent",
     "agent",
-    "plugin"
+    "plugin",
+    "control-plane"
   ],
   "dsh": {
     "bundle": {
