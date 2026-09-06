@@ -2,65 +2,114 @@
 
 ## Goal
 
-Make named DeepSeek Harness subagents manageable without asking humans to maintain repeated YAML plugin rows.
+Make DeepSeek Harness subagents feel like managed workers rather than YAML rows.
 
-## Boundary
+## Runtime boundary
 
-`dsh-subagent-mgr` is a **manager**, not a subagent backend. It delegates actual child creation to DeepSeek Harness by dynamically mounting `@deepseek-ai/dsh-tool-subagent` instances.
+`dsh-subagent-mgr` is a manager, not a child-agent backend. The official Harness subagent service and providers remain the execution authority.
 
 ```text
-Human
-  │
-  └─ /subagents add local_worker provider=ollama model=qwen3.8:27b
-        │
-        ▼
- dsh-subagent-mgr registry
-        │
-        ├─ validate friendly profile
-        ├─ inspect backend capability (when backend is present)
-        ├─ persist atomically
-        └─ ctx.plugin(@deepseek-ai/dsh-tool-subagent, translatedConfig)
-                         │
-                         ▼
-                DeepSeek Harness native
-                subagent service/backends
+                         ┌────────────────────────────┐
+ Web Settings            │  Harness settings service │
+ Plugins → 子代理 ──────►│  subagent-mgr namespace  │
+                         └──────────────┬─────────────┘
+                                        │ committed change
+ /subagents command ────────────────────┤
+                                        ▼
+                            dsh-subagent-mgr roster
+                                        │
+                         validate + reconcile Fibers
+                                        │
+                   ┌────────────────────┼────────────────────┐
+                   ▼                    ▼                    ▼
+             sub_local_worker      sub_reviewer         sub_router
+              tool-subagent         tool-subagent        tool-subagent
+                   │                    │                    │
+                   └──────────── Harness ctx.subagents ─────┘
 ```
 
-## Lifecycle
+## Host plane
 
-Each enabled profile owns one Cordis Fiber.
+The Host plugin owns four responsibilities:
 
-- **add / enable**: create and mount one fiber;
-- **set / route / persona**: dispose old fiber, mount replacement;
-- **disable / remove**: dispose the fiber;
-- **external state update**: directory watcher reloads and reconciles fingerprints;
-- **manager unload**: Cordis recursively disposes child fibers.
+1. register the `subagent-mgr` settings namespace;
+2. validate every roster write with the same `validateStore()` rules used by slash commands;
+3. translate each enabled profile to official `dsh-tool-subagent` configuration;
+4. reconcile dynamic Cordis child Fibers.
 
-## Why dynamic mounting instead of generating YAML
+Each enabled profile owns exactly one child Fiber.
 
-Generating YAML would only move the manual-config problem behind another command and would require loader/HMR semantics for each edit. Dynamic plugin fibers are already the Cordis-native lifecycle primitive: registrations unwind on dispose and replacement is immediate.
+- add / enable → mount one Fiber;
+- route / persona / policy edit → dispose the old Fiber and mount a replacement;
+- disable / delete → dispose the Fiber;
+- manager unload → Cordis recursively disposes managed Fibers.
 
-## State
+The manager never reimplements child startup, continuation, depth enforcement, or model routing.
 
-State is JSON because it is machine-owned and trivial to migrate. The user-facing API is `/subagents`; JSON is not treated as an authored config contract.
+## Settings state
 
-Writes use temp-file + rename so readers never observe a partially written document.
+The authoritative v0.2 state is the Harness settings namespace:
+
+```text
+subagent-mgr:
+  migratedLegacy: true
+  profiles:
+    local_worker:
+      ...
+```
+
+Why settings instead of another custom RPC/database:
+
+- Web clients already have a supported revision-fenced `settingsScope` write path;
+- `$DSH_HOME/settings.yaml` already has file watching and cross-surface invalidation;
+- stale writes are rejected by namespace revision instead of silently winning;
+- the plugin needs no extra Remote service or Typert-generated artifacts.
+
+The Host registers a broad serializable schema for the profile dictionary and uses `validateStore()` as the semantic validator. That keeps CLI, Web and externally edited settings on one rule set.
+
+## Legacy state
+
+v0.1 used `$DSH_HOME/subagent-mgr.json` with atomic temp-file + rename writes.
+
+v0.2 keeps that path only for compatibility:
+
+- if Harness has no settings service, it remains the fallback state owner;
+- when settings first becomes available and its roster is empty, the old roster is copied into settings;
+- `migratedLegacy: true` records that the import decision has happened;
+- the legacy file is not deleted automatically;
+- after migration, later deletion of every worker stays deleted and is not resurrected from the backup.
+
+## Browser plane
+
+The package also declares `dsh.client` and exports a prebuilt `lib/client.js`.
+
+DeepSeek Harness expects external client bundles to register a lazy CommonJS factory:
+
+```text
+window.__ModuleLoader__.load({ id: 'dsh-subagent-mgr', factory(require) { ... } })
+```
+
+The factory resolves `react` and `react/jsx-runtime` through Harness's browser module table, then registers one `settings.plugins.tab` contribution. The component binds `ctx.settingsScope` to the `subagent-mgr` namespace and loads `ctx.remote.session.modelCatalog()` for provider/model suggestions.
+
+The UI does not need a custom Host RPC.
+
+## Model catalog
+
+The editor reads Harness's existing Host-generation model catalog. This gives provider/model/reasoning suggestions without making the manager own a second model directory.
+
+Text inputs still allow custom IDs because a valid provider route may intentionally not advertise a model list.
 
 ## Compatibility policy
 
-The translation layer only targets documented `dsh-tool-subagent` fields:
+The translation layer targets documented `dsh-tool-subagent` fields only:
 
 - backend provider;
 - tool name;
-- child `agentOptions` route/effort/token cap;
+- child `agentOptions` provider/model/effort/token cap;
 - model selection setting;
 - foreground/background policy;
 - persona;
 - tool filters;
 - max depth.
 
-Backend-specific behavior is not reimplemented. When a registered backend advertises insufficient capability, the manager refuses the incompatible mutation.
-
-## Web UI
-
-A future Web UI should be a thin client over this same registry. The slash command is intentionally kept as the stable fallback because DeepSeek Harness's external browser-bundle contract can evolve independently of the subagent runtime.
+`/subagents doctor` remains the backend-capability diagnostic. Unsupported provider features fail loudly rather than being silently dropped.
