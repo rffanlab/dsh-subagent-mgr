@@ -18,14 +18,17 @@ test('client bundle exports a settings tab plugin', () => {
   new Function('window', code)(window)
   const exports = handoff.factory((specifier) => {
     if (specifier === 'react') return {}
-    if (specifier === 'react/jsx-runtime') return { jsx() {}, jsxs() {}, Fragment: Symbol('Fragment') }
     throw new Error(`unexpected require: ${specifier}`)
   })
   assert.deepEqual(exports.inject, ['slots', 'settingsScope', 'remote', 'remote.session'])
   assert.equal(typeof exports.apply, 'function')
 
   const registrations = []
-  const scope = { subscribe() { return () => {} }, getSnapshot() { return { status: 'ready', value: { profiles: {} }, writable: true } }, set() { return Promise.resolve() } }
+  const scope = {
+    subscribe() { return () => {} },
+    getSnapshot() { return { status: 'ready', value: { profiles: {} }, writable: true, revision: 1 } },
+    mutate() { return Promise.resolve() },
+  }
   const ctx = {
     settingsScope: { bind(spec) { assert.equal(spec.namespace, 'subagent-mgr'); return scope } },
     remote: { session: { modelCatalog() { return Promise.resolve({ ok: true, value: { default: { provider: 'p', model: 'm' }, groups: [], failures: [], routableProviders: [] } }) } } },
@@ -39,6 +42,13 @@ test('client bundle exports a settings tab plugin', () => {
   assert.equal(registrations[0].options.id, 'subagents')
   assert.equal(registrations[0].options.label, '子代理')
   assert.equal(typeof registrations[0].component, 'function')
+})
+
+test('client bundle contains concurrency protection surfaces', () => {
+  assert.match(code, /beforeunload/)
+  assert.match(code, /scope\.mutate/)
+  assert.match(code, /检测到并发修改/)
+  assert.match(code, /baseRevision/)
 })
 
 test('package manifest exposes and declares the web client bundle', async () => {
