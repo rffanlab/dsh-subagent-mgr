@@ -1,0 +1,23 @@
+name: upstream-contract
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * 1'
+  push:
+    paths:
+      - 'scripts/check-upstream-contract.mjs'
+      - '.github/workflows/upstream-contract.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  deepseek-harness-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/check-upstream-contract.mjs
