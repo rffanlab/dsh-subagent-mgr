@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.0 - 2026-09-06
+
+- Added a versioned, structurally typed Harness settings schema for managed profiles.
+- Added official backend capability hints for `spawn`, `fork`, `dsh-sdk`, `codex`, `claude-code`, and `acp`.
+- Added capability badges and proactive incompatibility warnings to the Web editor, with an explicit cleanup action instead of silent field deletion.
+- Kept custom backends unrestricted in the browser; live Host capabilities remain authoritative.
+- Added route-health feedback using the live Harness model catalog.
+- Extended `/subagents doctor` / `/subagents health` to preflight explicit `spawn`/`fork` LLM routes with `ctx.llm.resolveModelInfo()`.
+- Route diagnostics correctly treat DSH SDK routes as child-runtime-owned and Codex/Claude/ACP routes as backend-owned.
+- Parallelized route diagnostics across workers.
+- Added `schemaVersion` to the settings namespace for future migrations.
+- Extended the weekly upstream watchdog to verify the capability assumptions behind all six official backend hints.
+- Added v0.4 browser, manifest, and capability-hint regression tests.
+
 ## 0.3.0 - 2026-09-06
 
 - Made runtime roster changes transactional with reverse-order rollback for multi-worker edits.

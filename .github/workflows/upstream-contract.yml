@@ -6,8 +6,11 @@ on:
     - cron: '17 3 * * 1'
   push:
     paths:
-      - 'scripts/check-upstream-contract.mjs'
+      - 'scripts/check-upstream-contract-v4.mjs'
       - '.github/workflows/upstream-contract.yml'
+      - 'package.json'
+      - 'src/index.js'
+      - 'src/backend-hints.js'
 
 permissions:
   contents: read
@@ -20,4 +23,4 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: node scripts/check-upstream-contract.mjs
+      - run: node scripts/check-upstream-contract-v4.mjs
