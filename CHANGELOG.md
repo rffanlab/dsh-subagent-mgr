@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0 - 2026-09-06
+
+- Made runtime roster changes transactional with reverse-order rollback for multi-worker edits.
+- Await `fiber.await()` for every dynamically mounted `dsh-tool-subagent`, so startup failures are detected instead of treating a returned Fiber as healthy.
+- Validate Web/settings writes against the capabilities advertised by the currently registered subagent backends.
+- Restore the previous settings roster when an externally persisted edit unexpectedly fails runtime activation.
+- Prevent stale legacy JSON from becoming authoritative again after Harness settings has been observed.
+- Added revision-aware Web editing: unsaved drafts survive external changes and enter an explicit conflict state instead of being overwritten.
+- Added reload/keep-draft conflict actions, unsaved-change navigation guards, search, route inheritance shortcut, and clearer enabled/route status in the Web panel.
+- Added host consistency contract tests and Web concurrency contract tests.
+- Added `npm pack --dry-run` to CI so published/installable file coverage is checked on Node 20 and Node 22.
+- Added `docs/CONSISTENCY.md` documenting transaction, rollback, concurrency, and legacy fallback semantics.
+
 ## 0.2.0 - 2026-09-06
 
 - Added a native DeepSeek Harness Web management panel under `Settings → Plugins → 子代理`.
