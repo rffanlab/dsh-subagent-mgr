@@ -1,14 +1,15 @@
 {
   "name": "dsh-subagent-mgr",
-  "version": "0.4.0",
-  "description": "Zero-YAML subagent control plane and Web UI for DeepSeek Harness",
+  "version": "0.5.0",
+  "description": "Zero-YAML subagent control plane, Web UI, and runtime telemetry for DeepSeek Harness",
   "type": "module",
-  "main": "./src/index.js",
+  "main": "./src/plugin.js",
   "exports": {
-    ".": "./src/index.js",
+    ".": "./src/plugin.js",
     "./client": "./lib/client.js",
     "./core": "./src/core.js",
     "./backend-hints": "./src/backend-hints.js",
+    "./telemetry": "./src/telemetry.js",
     "./package.json": "./package.json"
   },
   "files": [
@@ -20,9 +21,9 @@
   ],
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/core.js && node --check src/index.js && node --check src/backend-hints.js && node --check src/settings-schema.js && node --check lib/client.js",
+    "check": "node --check src/core.js && node --check src/index.js && node --check src/plugin.js && node --check src/backend-hints.js && node --check src/settings-schema.js && node --check src/telemetry.js && node --check lib/client.js",
     "packcheck": "npm pack --dry-run --json",
-    "upstreamcheck": "node scripts/check-upstream-contract-v4.mjs"
+    "upstreamcheck": "node scripts/check-upstream-contract-v5.mjs"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "*"
@@ -45,7 +46,9 @@
     "subagent",
     "agent",
     "plugin",
-    "control-plane"
+    "control-plane",
+    "telemetry",
+    "observability"
   ],
   "dsh": {
     "bundle": {
@@ -56,6 +59,7 @@
       "inject": [
         "@deepseek-ai/dsh-client-ui-settings-plugins",
         "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-session",
         "@deepseek-ai/dsh-api-session-controller",
         "@deepseek-ai/dsh-api-remotes"
       ]
