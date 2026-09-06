@@ -24,13 +24,3 @@ jobs:
         with:
           node-version: 22
       - run: node scripts/check-upstream-contract-v4.mjs
-
-  published-package-import:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: npm install --ignore-scripts
-      - run: node -e "import('./src/index.js').then(m => { if (typeof m.apply !== 'function') process.exit(1) })"

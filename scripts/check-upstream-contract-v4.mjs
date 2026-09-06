@@ -21,6 +21,7 @@ function rejectTokens(path, text, tokens) {
 
 const paths = {
   tool: 'packages/subagent/tool-subagent/src/index.ts',
+  toolManifest: 'packages/subagent/tool-subagent/package.json',
   settings: 'packages/client/ui-settings/src/client/settings-scope.ts',
   client: 'packages/client/tsdown.client.ts',
   pluginCli: 'apps/cli/src/plugin.ts',
@@ -38,6 +39,9 @@ const text = Object.fromEntries(entries)
 requireTokens(paths.tool, text.tool, [
   'modelSelectionSettings', 'enableRunInBackground', 'backgroundMode',
   'agentOptions', 'persona', 'toolFilter', 'maxDepth',
+])
+requireTokens(paths.toolManifest, text.toolManifest, [
+  '"name": "@deepseek-ai/dsh-tool-subagent"', '"exports"', '"peerDependencies"', '"./package.json"',
 ])
 requireTokens(paths.settings, text.settings, ['mutate(ops', 'expectedRevision'])
 requireTokens(paths.client, text.client, ['__ModuleLoader__.load'])
