@@ -1,68 +1,99 @@
 # dsh-subagent-mgr
 
-**Zero-YAML subagent management for DeepSeek Harness.**
+**Zero-YAML subagent management + Web control panel for DeepSeek Harness.**
 
-DeepSeek Harness already has a capable native subagent subsystem. The annoying part is that named worker roles normally end up as repeated `dsh-tool-subagent` rows in composition files. `dsh-subagent-mgr` removes that manual layer: install the bundle once, then add, edit, route, disable, clone, or remove workers with the `/subagents` command.
+DeepSeek Harness already has a strong native subagent subsystem. `dsh-subagent-mgr` removes the annoying part: install one bundle, then manage named worker roles from the Web Settings UI or `/subagents` commands instead of hand-maintaining repeated `dsh-tool-subagent` rows.
 
-The manager does **not** replace DeepSeek Harness subagents. It dynamically mounts the official `@deepseek-ai/dsh-tool-subagent` plugin for every enabled profile, so provider capability checks, child isolation, background behavior, model routing, max-depth enforcement, personas, and tool filters stay owned by Harness itself.
+The manager does **not** replace DeepSeek Harness subagents. Every enabled worker is translated into the official `@deepseek-ai/dsh-tool-subagent` config and mounted as a Cordis child Fiber, so model routing, child isolation, background execution, depth limits, personas and tool filtering remain owned by Harness.
 
 ## Install
 
-Install directly from GitHub into the DSH profile you actually use:
+Install directly from GitHub into the profile you use:
 
 ```bash
 dsh plugin --profile default add github:rffanlab/dsh-subagent-mgr
 ```
 
-Use another profile name if needed:
+For the Web profile:
 
 ```bash
 dsh plugin --profile web add github:rffanlab/dsh-subagent-mgr
 ```
 
-Because this repository declares a `dsh.bundle.patch`, `dsh plugin` activates it as a profile layer automatically. **No `cordis.yml` editing is required.**
+The package declares both `dsh.bundle.patch` and `dsh.client`, so `dsh plugin` activates the Host manager and the browser bundle automatically. **No `cordis.yml` editing is required.**
 
-Remove it with:
+Upgrade:
+
+```bash
+dsh plugin --profile default update dsh-subagent-mgr
+```
+
+Remove:
 
 ```bash
 dsh plugin --profile default remove dsh-subagent-mgr
 ```
 
+## Web management UI
+
+Open:
+
+```text
+Settings → Plugins → 子代理
+```
+
+The panel supports:
+
+- create / edit / clone / delete workers;
+- enable or disable a worker immediately;
+- choose the Harness subagent backend (`spawn`, `fork`, `dsh-sdk`, `codex`, `claude-code`, `acp`, or a custom backend name);
+- select an LLM provider/model from the live Harness model catalog, while still allowing custom route IDs;
+- select reasoning effort when the chosen model advertises it;
+- set `maxTokens` and recursion `maxDepth`;
+- switch `one-shot` / `continuable` background behavior;
+- enable per-call dynamic model selection;
+- edit the worker persona / job description;
+- configure tool allow/deny lists;
+- edit the model-facing tool name.
+
+Saving a worker updates the running Harness composition immediately. No restart is required just to change a route, persona or worker policy.
+
+### State model
+
+v0.2 uses the native Harness settings service as the authoritative state owner:
+
+```text
+subagent-mgr:
+  profiles: ...
+```
+
+The Web panel writes through `settingsScope`, so Harness revision fencing protects against stale concurrent edits. The manager watches the same namespace and reconciles its child Fibers after each committed change.
+
+`~/.dsh/subagent-mgr.json` from v0.1 is treated only as a legacy import/fallback. On the first settings-enabled launch it is migrated once, non-destructively; a migration marker prevents an old backup from resurrecting deleted workers later.
+
 ## Quick start
 
-Inside DSH:
+Create a local worker from the Web UI, or use the command fallback:
 
 ```text
-/subagents add worker
 /subagents add local_worker provider=ollama model=qwen3.8:27b maxDepth=1
+```
+
+Give it a fixed role:
+
+```text
+/subagents persona local_worker "Handle repetitive implementation, code search and tests. Return architecture decisions to the parent agent."
+```
+
+Create a dynamic router:
+
+```text
 /subagents add router backend=spawn dynamic=true background=continuable
-/subagents list
-/subagents doctor
-```
-
-Each managed profile becomes its own model-facing tool. By default the tool is named `sub_<id>` so it does not collide with Harness's stock `subagent` tool.
-
-Example:
-
-```text
-/subagents add local_worker provider=ollama model=qwen3.8:27b persona="Handle repetitive implementation and tests. Escalate architecture decisions."
-```
-
-creates a tool named:
-
-```text
-sub_local_worker
-```
-
-and routes its children through:
-
-```text
-backend: spawn
-LLM provider: ollama
-model: qwen3.8:27b
 ```
 
 ## Commands
+
+The slash-command path remains available in TUI/Web and is intentionally kept as the compatibility fallback:
 
 ```text
 /subagents list
@@ -89,69 +120,39 @@ model: qwen3.8:27b
 | `model=qwen...` | Child model | `agentOptions.model` |
 | `effort=high` | Reasoning effort | `agentOptions.reasoningEffort` |
 | `maxTokens=8192` | Child output limit | `agentOptions.maxTokens` |
-| `dynamic=true` | Allow per-call model selection | `modelSelectionSettings` |
-| `background=one-shot` | Child background policy | `backgroundMode` |
-| `runInBackground=false` | Hide/forbid background switch | `enableRunInBackground` |
+| `dynamic=true` | Per-call model selection | `modelSelectionSettings` |
+| `background=one-shot` | Background policy | `backgroundMode` |
+| `runInBackground=false` | Forbid background switch | `enableRunInBackground` |
 | `persona="..."` | Child role/persona | `persona` |
 | `allow=a,b` | Child tool allowlist | `toolFilter.allow` |
 | `deny=x,y` | Child tool denylist | `toolFilter.deny` |
 | `maxDepth=1` | Recursion limit | `maxDepth` |
 | `tool=my_worker` | Model-facing tool name | `toolName` |
 
-`provider` and `model` are intentionally atomic: set both, or set both to `inherit`.
+`provider` and `model` are atomic: set both, or leave both empty / use `inherit`.
 
 ## Capability-aware safety
 
-`/subagents doctor` reads the currently registered Harness subagent backends and checks each managed worker against its advertised capabilities.
+`/subagents doctor` reads the currently registered Harness subagent backends and checks every managed worker against the backend's advertised capabilities.
 
-Examples of errors caught before you depend on a broken worker:
+It catches problems such as:
 
 - model overrides on a backend with no `agentOptions` capability;
 - `continuable` mode on a backend with no continuation support;
-- persona/tool filters on backends that do not expose those capabilities;
+- persona/tool filters on backends that do not support them;
 - numeric `maxDepth` on a backend that cannot enforce depth.
 
-Missing backends are warnings rather than destructive errors, so you can define a worker before an optional provider bundle is installed.
+The Web editor does client-side structural validation; the Host remains authoritative and rejects invalid roster writes through the settings namespace validator.
 
-## State and hot reload
+## Why the client bundle is prebuilt
 
-The manager persists its own machine-generated state at:
-
-```text
-$DSH_HOME/subagent-mgr.json
-```
-
-or, when `DSH_HOME` is not set:
+DeepSeek Harness external browser plugins must use its lazy-CJS handoff:
 
 ```text
-~/.dsh/subagent-mgr.json
+window.__ModuleLoader__.load({ id, factory })
 ```
 
-This file is an implementation detail, not a user configuration surface. Writes are atomic, and the manager watches it so multiple running DSH processes converge when one changes the worker roster.
-
-Override the location only when you deliberately want isolated state:
-
-```bash
-DSH_SUBAGENT_MGR_STATE=/some/path/subagents.json dsh ...
-```
-
-## Design
-
-The manager keeps a tiny registry of named profiles. For every enabled entry it translates the friendly profile into the official `dsh-tool-subagent` config and mounts that plugin dynamically through Cordis. Updating a worker disposes the old child plugin fiber and mounts a replacement; disabling/removing a worker disposes it immediately.
-
-That gives three useful properties:
-
-1. **No duplicated subagent implementation.** DeepSeek Harness remains the runtime authority.
-2. **Changes apply live.** You do not have to restart just to change a worker route or persona.
-3. **Upstream failures stay loud.** Unsupported backend features are not silently ignored.
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the detailed lifecycle.
-
-## Current scope
-
-v0.1 deliberately focuses on the management layer that removes YAML. It does not invent a second scheduler, child runtime, or model catalog. Parallel tool calls and child execution remain native Harness behavior.
-
-A browser settings panel can be added later on top of the same registry without changing the storage or runtime model. The slash-command path remains the compatibility baseline even if Harness changes its Web client plugin bundling.
+The repository commits `lib/client.js` in that exact shape instead of requiring users to reproduce Harness's internal `tsdown.client.ts` preset. This avoids a build step during `dsh plugin add`, while still resolving React and Harness services through the browser module table.
 
 ## Development
 
@@ -160,7 +161,9 @@ npm test
 npm run check
 ```
 
-The core parser/config translator has no Harness dependency and is covered by Node's built-in test runner.
+Tests cover the profile parser/config translator and the browser handoff/Settings-tab registration contract.
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for lifecycle and state details.
 
 ## License
 
