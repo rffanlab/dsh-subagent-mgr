@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 
-const code = await readFile(new URL('../lib/client-v4.js', import.meta.url), 'utf8')
+const code = await readFile(new URL('../lib/client.js', import.meta.url), 'utf8')
 
 function handoffOf() {
   let handoff

@@ -3,24 +3,24 @@
   "version": "0.4.0",
   "description": "Zero-YAML subagent control plane and Web UI for DeepSeek Harness",
   "type": "module",
-  "main": "./src/index-v4.js",
+  "main": "./src/index.js",
   "exports": {
-    ".": "./src/index-v4.js",
-    "./client": "./lib/client-v4.js",
+    ".": "./src/index.js",
+    "./client": "./lib/client.js",
     "./core": "./src/core.js",
     "./backend-hints": "./src/backend-hints.js",
     "./package.json": "./package.json"
   },
   "files": [
     "src/**/*.js",
-    "lib/client-v4.js",
+    "lib/client.js",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/core.js && node --check src/index-v4.js && node --check src/backend-hints.js && node --check src/settings-schema.js && node --check lib/client-v4.js",
+    "check": "node --check src/core.js && node --check src/index.js && node --check src/backend-hints.js && node --check src/settings-schema.js && node --check lib/client.js",
     "packcheck": "npm pack --dry-run --json",
     "upstreamcheck": "node scripts/check-upstream-contract-v4.mjs"
   },

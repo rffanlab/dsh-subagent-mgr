@@ -9,7 +9,7 @@ on:
       - 'scripts/check-upstream-contract-v4.mjs'
       - '.github/workflows/upstream-contract.yml'
       - 'package.json'
-      - 'src/index-v4.js'
+      - 'src/index.js'
       - 'src/backend-hints.js'
 
 permissions:
@@ -33,4 +33,4 @@ jobs:
         with:
           node-version: 22
       - run: npm install --ignore-scripts
-      - run: node -e "import('./src/index-v4.js').then(m => { if (typeof m.apply !== 'function') process.exit(1) })"
+      - run: node -e "import('./src/index.js').then(m => { if (typeof m.apply !== 'function') process.exit(1) })"

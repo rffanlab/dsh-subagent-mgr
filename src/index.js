@@ -2,7 +2,6 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { watch } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
-import z from '@deepseek-ai/schemastery'
 import * as toolSubagent from '@deepseek-ai/dsh-tool-subagent'
 import {
   emptyStore,
@@ -15,14 +14,15 @@ import {
   tokenize,
   validateStore,
 } from './core.js'
+import { backendHint, hintedCompatibilityProblems } from './backend-hints.js'
+import {
+  MANAGER_SETTINGS_VERSION,
+  ManagerSettingsSchema,
+} from './settings-schema.js'
 
 export const name = 'dsh-subagent-mgr'
 export const MANAGER_SETTINGS_NS = 'subagent-mgr'
-
-export const ManagerSettingsSchema = z.object({
-  profiles: z.dict(z.any()).default({}),
-  migratedLegacy: z.boolean().default(false),
-})
+export { ManagerSettingsSchema }
 
 function statePathFromEnvironment() {
   if (process.env.DSH_SUBAGENT_MGR_STATE) return resolve(process.env.DSH_SUBAGENT_MGR_STATE)
@@ -46,19 +46,28 @@ async function writeStore(path, store) {
   await rename(temp, path)
 }
 
+function settingsSection(store) {
+  return {
+    schemaVersion: MANAGER_SETTINGS_VERSION,
+    profiles: store.profiles,
+    migratedLegacy: true,
+  }
+}
+
 function storeFromSettings(value) {
   return validateStore({ version: 1, profiles: value?.profiles ?? {} })
 }
 
-function compatibilityProblems(profile, subagents) {
+function liveCompatibilityProblems(profile, subagents) {
   const provider = subagents?.getProvider?.(profile.backend)
   if (provider === undefined) return [`backend "${profile.backend}" is not registered right now`]
   const caps = provider.capabilities ?? {}
   const problems = []
-  const hasAgentOptions = profile.llmProvider !== undefined
+  const usesAgentOptions = profile.llmProvider !== undefined
     || profile.reasoningEffort !== undefined
     || profile.maxTokens !== undefined
-  if ((hasAgentOptions || profile.dynamicModelSelection) && !caps.agentOptions) {
+    || profile.dynamicModelSelection === true
+  if (usesAgentOptions && !caps.agentOptions) {
     problems.push(`backend "${profile.backend}" does not support child model/agentOptions overrides`)
   }
   if (profile.persona !== undefined && !caps.persona) {
@@ -76,17 +85,26 @@ function compatibilityProblems(profile, subagents) {
   return problems
 }
 
+function compatibilityProblems(profile, subagents) {
+  const all = [
+    ...liveCompatibilityProblems(profile, subagents),
+    ...hintedCompatibilityProblems(profile),
+  ]
+  return [...new Set(all)]
+}
+
 function hardCompatibilityProblems(profile, subagents) {
   return compatibilityProblems(profile, subagents)
     .filter(problem => !problem.includes('is not registered right now'))
 }
 
 function profileDetails(profile, mounted) {
+  const hint = backendHint(profile.backend)
   const lines = [
     formatProfile(profile),
     `runtime: ${mounted ? 'mounted' : profile.enabled ? 'not mounted / waiting' : 'disabled'}`,
     `enabled: ${profile.enabled}`,
-    `backend: ${profile.backend}`,
+    `backend: ${profile.backend}${hint ? ` (${hint.label})` : ''}`,
     `toolName: ${profile.toolName}`,
     `dynamicModelSelection: ${profile.dynamicModelSelection}`,
     `enableRunInBackground: ${profile.enableRunInBackground}`,
@@ -100,6 +118,50 @@ function profileDetails(profile, mounted) {
   if (profile.allowTools !== undefined) lines.push(`allowTools: ${profile.allowTools.join(', ')}`)
   if (profile.denyTools !== undefined) lines.push(`denyTools: ${profile.denyTools.join(', ')}`)
   return lines.join('\n')
+}
+
+async function routeDiagnostics(profile, ctx) {
+  if (!profile.enabled || profile.llmProvider === undefined || profile.model === undefined) return []
+  const hint = backendHint(profile.backend)
+  if (hint?.routeScope === 'child') {
+    return [{ level: 'INFO', text: 'LLM route belongs to the child DSH runtime; parent Harness cannot verify it.' }]
+  }
+  if (hint?.routeScope === 'backend') {
+    return [{ level: 'INFO', text: 'This backend owns its model route; parent Harness LLM catalog is not authoritative.' }]
+  }
+  if (hint === undefined) {
+    return [{ level: 'INFO', text: 'Custom backend route ownership is unknown; skipped parent-catalog verification.' }]
+  }
+
+  const llm = typeof ctx.get === 'function' ? ctx.get('llm') : undefined
+  if (llm === undefined) return [{ level: 'WARN', text: 'LLM runtime is not available for route verification.' }]
+
+  const provider = llm.listProviders().find(candidate => candidate.id === profile.llmProvider)
+  if (provider === undefined) {
+    return [{ level: 'WARN', text: `LLM provider "${profile.llmProvider}" is not registered in this Harness process.` }]
+  }
+
+  try {
+    const info = await llm.resolveModelInfo(profile.llmProvider, profile.model)
+    const diagnostics = [{ level: 'OK', text: `LLM route resolved: ${provider.name}/${info.name ?? info.id ?? profile.model}` }]
+    if (profile.reasoningEffort !== undefined) {
+      const efforts = info.reasoning?.efforts ?? []
+      if (!efforts.some(effort => effort.id === profile.reasoningEffort)) {
+        diagnostics.push({
+          level: 'WARN',
+          text: efforts.length
+            ? `reasoning effort "${profile.reasoningEffort}" is not advertised; available: ${efforts.map(e => e.id).join(', ')}`
+            : `model does not advertise reasoning efforts, but "${profile.reasoningEffort}" is configured`,
+        })
+      }
+    }
+    return diagnostics
+  } catch (error) {
+    return [{
+      level: 'WARN',
+      text: `LLM route ${profile.llmProvider}/${profile.model} failed exact-route preflight: ${error?.message ?? String(error)}`,
+    }]
+  }
 }
 
 export function apply(ctx) {
@@ -122,7 +184,6 @@ export function apply(ctx) {
 
   const assertCompatible = candidate => {
     const subagents = currentSubagents()
-    if (subagents === undefined) return
     const failures = []
     for (const profile of Object.values(candidate.profiles)) {
       if (!profile.enabled) continue
@@ -130,7 +191,9 @@ export function apply(ctx) {
         failures.push(`${profile.id}: ${problem}`)
       }
     }
-    if (failures.length) throw new Error(`subagent configuration is incompatible with the live Harness runtime:\n${failures.join('\n')}`)
+    if (failures.length) {
+      throw new Error(`subagent configuration is incompatible with the live Harness runtime:\n${failures.join('\n')}`)
+    }
   }
 
   const unmount = async id => {
@@ -141,8 +204,7 @@ export function apply(ctx) {
   }
 
   const mount = async profile => {
-    const config = profileToToolConfig(profile)
-    const fiber = ctx.plugin(toolSubagent, config)
+    const fiber = ctx.plugin(toolSubagent, profileToToolConfig(profile))
     try {
       await fiber.await()
     } catch (error) {
@@ -167,6 +229,7 @@ export function apply(ctx) {
         const fingerprint = profileFingerprint(profile)
         const current = mounted.get(profile.id)
         if (current?.fingerprint === fingerprint) continue
+
         if (current === undefined) {
           await mount(profile)
           undo.push(async () => { await unmount(profile.id) })
@@ -226,17 +289,14 @@ export function apply(ctx) {
 
   const reconcileExternal = async nextStore => {
     const normalized = validateStore(nextStore)
-    const fingerprint = JSON.stringify(normalized)
-    if (fingerprint === storeFingerprint) return false
+    if (JSON.stringify(normalized) === storeFingerprint) return false
     const tx = await transitionRuntime(normalized)
     tx.commit()
     return true
   }
 
   const reload = async () => {
-    if (settingsOwnerScope !== undefined) {
-      return reconcileExternal(storeFromSettings(settingsOwnerScope.get()))
-    }
+    if (settingsOwnerScope !== undefined) return reconcileExternal(storeFromSettings(settingsOwnerScope.get()))
     if (settingsEverBound) return false
     return reconcileExternal(await readStore(legacyPath))
   }
@@ -252,7 +312,7 @@ export function apply(ctx) {
     try {
       if (settingsOwnerScope !== undefined) {
         selfSettingsWriteFingerprint = JSON.stringify(normalized)
-        await settingsOwnerScope.replace({ profiles: normalized.profiles, migratedLegacy: true })
+        await settingsOwnerScope.replace(settingsSection(normalized))
       } else {
         await writeStore(legacyPath, normalized)
       }
@@ -322,7 +382,7 @@ export function apply(ctx) {
           console.error(`[dsh-subagent-mgr] settings reconcile failed; restoring previous roster: ${error?.stack ?? error}`)
           selfSettingsWriteFingerprint = JSON.stringify(previous)
           try {
-            await scope.replace({ profiles: previous.profiles, migratedLegacy: true })
+            await scope.replace(settingsSection(previous))
           } catch (restoreError) {
             selfSettingsWriteFingerprint = undefined
             console.error(`[dsh-subagent-mgr] settings rollback failed: ${restoreError?.stack ?? restoreError}`)
@@ -330,6 +390,7 @@ export function apply(ctx) {
         }
       })
     })
+
     settingsCtx.effect(() => stopWatch, 'dsh-subagent-mgr settings watcher')
     settingsCtx.effect(() => () => {
       if (settingsOwnerScope === scope) settingsOwnerScope = undefined
@@ -344,9 +405,13 @@ export function apply(ctx) {
           ? legacy
           : fromSettings
         selfSettingsWriteFingerprint = JSON.stringify(target)
-        await scope.replace({ profiles: target.profiles, migratedLegacy: true })
+        await scope.replace(settingsSection(target))
         await reconcileExternal(target)
         return
+      }
+      if (settingsValue.schemaVersion !== MANAGER_SETTINGS_VERSION) {
+        selfSettingsWriteFingerprint = JSON.stringify(fromSettings)
+        await scope.replace(settingsSection(fromSettings))
       }
       await reconcileExternal(fromSettings)
     }).catch(error => {
@@ -369,7 +434,7 @@ export function apply(ctx) {
   ctx.inject(['commands', 'subagents'], commandCtx => {
     commandCtx.commands.register({
       name: 'subagents',
-      description: 'manage named subagent workers without editing YAML',
+      description: 'manage and diagnose named subagent workers without editing YAML',
       input: { hint: '[list|add|set|route|persona|enable|disable|clone|rm|show|doctor|reload]' },
       handler: invocation => serialize(async () => {
         try {
@@ -392,20 +457,26 @@ export function apply(ctx) {
             if (!profile) return { kind: 'error', text: `unknown subagent: ${id}` }
             return { kind: 'success', text: profileDetails(profile, mounted.has(id)) }
           }
-          if (op === 'doctor') {
+          if (op === 'doctor' || op === 'health') {
             const providers = commandCtx.subagents.list()
             const state = settingsOwnerScope === undefined
               ? settingsEverBound ? 'settings temporarily unavailable' : `legacy file: ${legacyPath}`
-              : `settings namespace: ${MANAGER_SETTINGS_NS}`
+              : `settings namespace: ${MANAGER_SETTINGS_NS} v${MANAGER_SETTINGS_VERSION}`
             const lines = [
               `state: ${state}`,
               `tool-subagent API: ${typeof toolSubagent.apply === 'function' ? 'present' : 'missing'}`,
               `registered backends: ${providers.length ? providers.join(', ') : '(none)'}`,
             ]
-            for (const profile of Object.values(store.profiles).sort((a, b) => a.id.localeCompare(b.id))) {
+            const profiles = Object.values(store.profiles).sort((a, b) => a.id.localeCompare(b.id))
+            const routeRows = await Promise.all(profiles.map(profile => routeDiagnostics(profile, commandCtx)))
+            for (let index = 0; index < profiles.length; index += 1) {
+              const profile = profiles[index]
               const problems = compatibilityProblems(profile, commandCtx.subagents)
               const runtime = mounted.has(profile.id) ? 'mounted' : profile.enabled ? 'waiting' : 'disabled'
               lines.push(`${problems.length ? 'WARN' : 'OK'} ${profile.id} [${runtime}]: ${problems.length ? problems.join('; ') : 'compatible with current backend capabilities'}`)
+              for (const diagnostic of routeRows[index]) {
+                lines.push(`  ${diagnostic.level} route: ${diagnostic.text}`)
+              }
             }
             return { kind: 'success', text: lines.join('\n') }
           }
