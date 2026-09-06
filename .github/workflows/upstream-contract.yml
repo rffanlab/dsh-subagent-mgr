@@ -6,8 +6,11 @@ on:
     - cron: '17 3 * * 1'
   push:
     paths:
-      - 'scripts/check-upstream-contract.mjs'
+      - 'scripts/check-upstream-contract-v4.mjs'
       - '.github/workflows/upstream-contract.yml'
+      - 'package.json'
+      - 'src/index-v4.js'
+      - 'src/backend-hints.js'
 
 permissions:
   contents: read
@@ -20,4 +23,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: node scripts/check-upstream-contract.mjs
+      - run: node scripts/check-upstream-contract-v4.mjs
+
+  published-package-import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --ignore-scripts
+      - run: node -e "import('./src/index-v4.js').then(m => { if (typeof m.apply !== 'function') process.exit(1) })"
