@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.0 - 2026-09-06
+
+- Added a separate persistent runtime telemetry observer for managed subagent tool calls.
+- Attribute calls by each managed worker's unique `toolName` at Harness's `tools/execute` around-dispatch boundary.
+- Track calls, in-memory running count, success/failure totals, foreground/background totals, average/max/latest duration, latest route/outcome/error code, and a bounded recent-call ring.
+- Persist telemetry outside Harness settings at `$DSH_HOME/subagent-mgr-telemetry.json` (or `DSH_SUBAGENT_MGR_TELEMETRY`) with 750 ms batched atomic writes.
+- Keep telemetry privacy-minimal: no prompts, task descriptions, assistant outputs, full error messages, environment values, credentials, or file contents are persisted.
+- Added `/subagent-stats`, `recent`, `json`, and `reset <worker|all>` command surfaces.
+- Added a manual Web runtime-statistics panel using the existing Harness command Remote and current `uiSession`; no polling and no custom telemetry RPC.
+- Explicitly distinguish foreground completion metrics from background acceptance/scheduling metrics.
+- Deliberately omit token totals until Harness exposes stable managed-tool-to-child-usage attribution across all supported backends.
+- Added low-success-rate recommendations without automatic retries, avoiding unsafe duplication of partially completed side-effecting tasks.
+- Made telemetry a non-authoritative root wrapper: telemetry setup failure degrades observability only and does not block the existing control plane.
+- Extended the weekly upstream watchdog to cover `tools/execute`, command Remote, and current `uiSession` contracts used by observability.
+- Added persistent telemetry lifecycle, Web telemetry transport, root-wrapper isolation, and v0.4-regression tests.
+- Added `docs/OBSERVABILITY.md` defining metric semantics, storage, privacy, and no-auto-retry policy.
+
 ## 0.4.0 - 2026-09-06
 
 - Added a versioned, structurally typed Harness settings schema for managed profiles.

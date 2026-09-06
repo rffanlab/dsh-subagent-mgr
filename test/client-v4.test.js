@@ -11,19 +11,19 @@ function handoffOf() {
   return handoff
 }
 
-test('v4 client registers lazy-CJS handoff', () => {
+test('client still registers the v0.4 lazy-CJS handoff contract', () => {
   const handoff = handoffOf()
   assert.equal(handoff.id, 'dsh-subagent-mgr')
   assert.equal(typeof handoff.factory, 'function')
 })
 
-test('v4 client exports the settings tab plugin', () => {
+test('client keeps the settings tab while adding observability dependencies', () => {
   const handoff = handoffOf()
   const exports = handoff.factory(specifier => {
     if (specifier === 'react') return {}
     throw new Error(`unexpected require: ${specifier}`)
   })
-  assert.deepEqual(exports.inject, ['slots', 'settingsScope', 'remote', 'remote.session'])
+  assert.deepEqual(exports.inject, ['slots', 'settingsScope', 'uiSession', 'remote', 'remote.session', 'remote.commands'])
   assert.equal(typeof exports.apply, 'function')
 
   const registrations = []
@@ -40,6 +40,7 @@ test('v4 client exports the settings tab plugin', () => {
         return scope
       },
     },
+    uiSession: { adapter:{ current:{ getSnapshot(){ return { props:{ sessionId:'s1' } } } } } },
     remote: {
       session: {
         modelCatalog() {
@@ -49,6 +50,7 @@ test('v4 client exports the settings tab plugin', () => {
           })
         },
       },
+      commands: { execute(){ return Promise.resolve({ ok:true, value:{ result:{ kind:'success', text:'{"workers":[],"recent":[]}' } } }) } },
     },
     slots: {
       inject(name, callback) {
@@ -66,7 +68,7 @@ test('v4 client exports the settings tab plugin', () => {
   assert.equal(registrations[0].options.label, '子代理')
 })
 
-test('v4 client carries capability hints and revision-fenced writes', () => {
+test('client keeps v0.4 capability hints and revision-fenced writes', () => {
   assert.match(code, /dsh-sdk/)
   assert.match(code, /claude-code/)
   assert.match(code, /清理不兼容选项/)
