@@ -1,3 +1,4 @@
+// Keep this checker cheap enough to run weekly; it watches only contracts this plugin actually consumes.
 const ROOT = 'https://raw.githubusercontent.com/deepseek-ai/deepseek-harness/master'
 
 async function source(path) {
