@@ -1,0 +1,106 @@
+const ROOT = 'https://raw.githubusercontent.com/deepseek-ai/deepseek-harness/master'
+
+async function source(path) {
+  const response = await fetch(`${ROOT}/${path}`, {
+    headers: { 'user-agent': 'dsh-subagent-mgr-upstream-contract' },
+  })
+  if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`)
+  return response.text()
+}
+
+function requireTokens(path, text, tokens) {
+  const missing = tokens.filter(token => !text.includes(token))
+  if (missing.length) throw new Error(`${path}: upstream contract changed; missing markers: ${missing.join(', ')}`)
+  console.log(`ok ${path}: ${tokens.join(', ')}`)
+}
+
+function rejectTokens(path, text, tokens) {
+  const present = tokens.filter(token => text.includes(token))
+  if (present.length) throw new Error(`${path}: upstream capability changed; now contains: ${present.join(', ')}`)
+}
+
+const paths = {
+  tool: 'packages/subagent/tool-subagent/src/index.ts',
+  toolManifest: 'packages/subagent/tool-subagent/package.json',
+  settings: 'packages/client/ui-settings/src/client/settings-scope.ts',
+  client: 'packages/client/tsdown.client.ts',
+  pluginCli: 'apps/cli/src/plugin.ts',
+  tools: 'packages/core/tools/src/index.ts',
+  toolSchema: 'packages/core/tools/src/schema.ts',
+  toolsManifest: 'packages/core/tools/package.json',
+  commands: 'packages/interaction/commands/src/index.ts',
+  commandClient: 'packages/client/ui-commands/src/client/service.ts',
+  uiSession: 'packages/client/ui-session/src/client/index.ts',
+  spawn: 'packages/subagent/subagent-spawn-in-process/src/index.ts',
+  fork: 'packages/subagent/subagent-fork-in-process/src/index.ts',
+  sdk: 'packages/subagent/subagent-dsh-sdk/src/index.ts',
+  codex: 'packages/subagent/subagent-codex/src/index.ts',
+  claude: 'packages/subagent/subagent-claude-code/src/index.ts',
+  acp: 'packages/subagent/subagent-acp/src/index.ts',
+}
+
+const entries = await Promise.all(Object.entries(paths).map(async ([key, path]) => [key, await source(path)]))
+const text = Object.fromEntries(entries)
+
+requireTokens(paths.tool, text.tool, [
+  'modelSelectionSettings', 'enableRunInBackground', 'backgroundMode',
+  'agentOptions', 'persona', 'toolFilter', 'maxDepth',
+])
+requireTokens(paths.toolManifest, text.toolManifest, [
+  '"name": "@deepseek-ai/dsh-tool-subagent"', '"exports"', '"peerDependencies"', '"./package.json"',
+])
+requireTokens(paths.settings, text.settings, ['mutate(ops', 'expectedRevision'])
+requireTokens(paths.client, text.client, ['__ModuleLoader__.load'])
+requireTokens(paths.pluginCli, text.pluginCli, ['dsh.bundle', 'reconcilePlugins'])
+
+// v0.5 observability contract: an around-dispatch waterfall whose result is the
+// final normalized ToolExecutionResult. This remains the source for the v0.6
+// reliability/latency evidence.
+requireTokens(paths.tools, text.tools, [
+  "'tools/execute'", 'for timeout, retry, or metrics', 'next: () => Promise<ToolExecutionResult>',
+  'readonly isError: true', 'readonly isError: false',
+])
+
+// v0.6 routing adds a read-only model-facing capability through the public
+// dsh-tools authoring seam. index.ts owns registry + concurrency metadata;
+// schema.ts owns defineTool's model-facing author contract.
+requireTokens(paths.tools, text.tools, [
+  'defineTool', 'register(definition: ToolDefinition)', 'isConcurrencySafe?',
+])
+requireTokens(paths.toolSchema, text.toolSchema, [
+  'export interface DefineToolOptions', 'readonly description: string',
+  'readonly parameters:', 'readonly output:', 'execute(args:', 'export function defineTool',
+])
+requireTokens(paths.toolsManifest, text.toolsManifest, [
+  '"name": "@deepseek-ai/dsh-tools"', '"exports"', '"peerDependencies"',
+])
+
+// Web observability still reuses the existing command Remote rather than a
+// second telemetry RPC. uiSession supplies the current sessionId used by that
+// endpoint.
+requireTokens(paths.commands, text.commands, ['@Remote', 'async execute(', 'line: string'])
+requireTokens(paths.commandClient, text.commandClient, ['ctx.remote.commands.execute(session.sessionId, line, attachments)'])
+requireTokens(paths.uiSession, text.uiSession, [
+  'SessionMaybeStandardProps', 'sessionId: SessionId | undefined',
+  'adapter:', 'current:', 'getSnapshot: () => this.currentBinding',
+])
+
+for (const key of ['spawn', 'fork']) {
+  requireTokens(paths[key], text[key], [
+    'agentOptions: true', 'depthLimit: true', 'toolFilter: true', 'persona: true',
+    'prepareContinuable',
+  ])
+}
+requireTokens(paths.sdk, text.sdk, ['...NO_START_CAPABILITIES', 'agentOptions: true'])
+rejectTokens(paths.sdk, text.sdk, ['prepareContinuable('])
+
+for (const key of ['codex', 'claude']) {
+  requireTokens(paths[key], text[key], ['capabilities: SubagentCapabilities = NO_START_CAPABILITIES'])
+  rejectTokens(paths[key], text[key], ['prepareContinuable('])
+}
+requireTokens(paths.acp, text.acp, [
+  'agentOptions: false', 'depthLimit: false', 'toolFilter: false', 'persona: false',
+])
+rejectTokens(paths.acp, text.acp, ['prepareContinuable('])
+
+console.log('DeepSeek Harness control-plane, observability, and advisory-routing contracts still match dsh-subagent-mgr v0.6.')
