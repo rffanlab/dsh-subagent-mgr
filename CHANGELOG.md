@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.0 - 2026-09-07
+
+- Added a read-only model-facing `route_subagent` tool that ranks managed workers before delegation and never dispatches, retries, or replays work itself.
+- Added `/subagent-route` for human routing inspection using the same scorer with `recordInput: false`.
+- Added routing objectives `balanced`, `quality`, `speed`, and `cheap` with explicit, documented component weights.
+- Added Bayesian-smoothed reliability so cold workers remain eligible without one lucky run dominating established evidence.
+- Blend a bounded recent-performance signal into long-run reliability when enough recent calls exist.
+- Added measured latency and current in-process `running` load as routing evidence.
+- Added lexical task fit against existing worker Persona/profile metadata, including CJK character/bigram matching for Chinese text, without introducing a new routing config file.
+- Added an explicitly labeled local/non-local **cost prior** instead of pretending to know provider billing; known Ollama/vLLM/LM Studio/SGLang/local routes are favored under `goal=cheap`.
+- Correctly treat Codex/Claude/ACP/DSH-SDK backend-owned routes separately from ordinary parent-model inheritance.
+- Exclude disabled workers and workers that disallow background execution when `background=true` is requested.
+- Split the pure scoring engine (`routing-score.js`) from the Harness adapter (`router.js`) for deterministic testing and easier upstream compatibility maintenance.
+- Keep routing failure isolated from telemetry and the authoritative manager; routing advice cannot block settings, Fiber transitions, rollback, or child execution.
+- Added `@deepseek-ai/dsh-tools` as the public model-facing tool-authoring peer and extended the upstream watchdog to verify that seam.
+- Added routing regression tests for cheap/quality/research decisions, background eligibility, load balancing, Bayesian cold starts, backend-owned cost priors, invalid inputs, and no-side-effect output semantics.
+- Added `docs/ROUTING.md` documenting formulas, privacy, cost-prior limits, confidence levels, eligibility, and the no-auto-retry boundary.
+
 ## 0.5.0 - 2026-09-06
 
 - Added a separate persistent runtime telemetry observer for managed subagent tool calls.
