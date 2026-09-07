@@ -6,12 +6,14 @@ on:
     - cron: '17 3 * * 1'
   push:
     paths:
-      - 'scripts/check-upstream-contract-v5.mjs'
+      - 'scripts/check-upstream-contract-v6.mjs'
       - '.github/workflows/upstream-contract.yml'
       - 'package.json'
       - 'src/index.js'
       - 'src/plugin.js'
       - 'src/telemetry.js'
+      - 'src/routing-score.js'
+      - 'src/router.js'
       - 'src/backend-hints.js'
       - 'lib/client.js'
 
@@ -26,4 +28,4 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: node scripts/check-upstream-contract-v5.mjs
+      - run: node scripts/check-upstream-contract-v6.mjs
