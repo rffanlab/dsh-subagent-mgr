@@ -72,9 +72,12 @@ function speedOf(row) {
 function costPriorOf(profile) {
   const route = profile?.llmProvider && profile?.model ? `${profile.llmProvider}/${profile.model}` : 'inherit'
   if (LOCAL_ROUTE_RE.test(route)) return { score: 1, label: 'known-local route' }
-  if (route === 'inherit') return { score: 0.55, label: 'inherited/unknown route' }
+  // These providers own their model route outside the parent Harness catalog;
+  // an omitted agentOptions route must not be mistaken for a cheap/neutral
+  // parent-model inheritance signal.
   if (profile?.backend === 'codex' || profile?.backend === 'claude-code') return { score: 0.35, label: 'external backend prior' }
   if (profile?.backend === 'acp' || profile?.backend === 'dsh-sdk') return { score: 0.45, label: 'backend-owned route prior' }
+  if (route === 'inherit') return { score: 0.55, label: 'inherited/unknown route' }
   return { score: 0.4, label: 'explicit non-local route prior' }
 }
 
