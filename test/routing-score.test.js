@@ -39,6 +39,18 @@ test('cheap routing prefers a known-local worker while quality prefers stronger 
   assert.ok(quality.ranked[0].reliability > cheap.ranked.find(row => row.id === 'local_worker').reliability)
 })
 
+test('backend-owned inherit is not mislabeled as parent-model inheritance', () => {
+  const result = rankSubagents({
+    codex:{ id:'codex', enabled:true, backend:'codex', toolName:'sub_codex' },
+    sdk:{ id:'sdk', enabled:true, backend:'dsh-sdk', toolName:'sub_sdk' },
+    inherited:{ id:'inherited', enabled:true, backend:'spawn', toolName:'sub_inherit' },
+  }, { workers:[], recent:[] }, { goal:'cheap', limit:10 })
+  const rows = new Map(result.ranked.map(row => [row.id, row]))
+  assert.equal(rows.get('codex').costLabel, 'external backend prior')
+  assert.equal(rows.get('sdk').costLabel, 'backend-owned route prior')
+  assert.equal(rows.get('inherited').costLabel, 'inherited/unknown route')
+})
+
 test('task/persona lexical fit can route research work to the research worker', () => {
   const result = rankSubagents(profiles, telemetry, {
     goal:'balanced',
