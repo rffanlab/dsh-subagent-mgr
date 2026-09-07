@@ -26,6 +26,7 @@ const paths = {
   client: 'packages/client/tsdown.client.ts',
   pluginCli: 'apps/cli/src/plugin.ts',
   tools: 'packages/core/tools/src/index.ts',
+  toolSchema: 'packages/core/tools/src/schema.ts',
   toolsManifest: 'packages/core/tools/package.json',
   commands: 'packages/interaction/commands/src/index.ts',
   commandClient: 'packages/client/ui-commands/src/client/service.ts',
@@ -60,12 +61,15 @@ requireTokens(paths.tools, text.tools, [
   'readonly isError: true', 'readonly isError: false',
 ])
 
-// v0.6 routing adds a read-only model-facing capability using the public tool
-// authoring seam; it must remain possible to register a defineTool result and
-// declare the call concurrency-safe without touching the Agent loop.
+// v0.6 routing adds a read-only model-facing capability through the public
+// dsh-tools authoring seam. index.ts owns registry + concurrency metadata;
+// schema.ts owns defineTool's model-facing author contract.
 requireTokens(paths.tools, text.tools, [
   'defineTool', 'register(definition: ToolDefinition)', 'isConcurrencySafe?',
-  'description:', 'parameters:', 'output:', 'execute(',
+])
+requireTokens(paths.toolSchema, text.toolSchema, [
+  'export interface DefineToolOptions', 'readonly description: string',
+  'readonly parameters:', 'readonly output:', 'execute(args:', 'export function defineTool',
 ])
 requireTokens(paths.toolsManifest, text.toolsManifest, [
   '"name": "@deepseek-ai/dsh-tools"', '"exports"', '"peerDependencies"',
